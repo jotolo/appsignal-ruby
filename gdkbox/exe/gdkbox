@@ -1,0 +1,11 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "gdkbox/cli"
+
+begin
+  GDKBox::CLI.start(ARGV)
+rescue GDKBox::Error => e
+  warn e.message
+  exit 1
+end
