@@ -69,8 +69,9 @@ Or run it straight from a checkout without installing:
 | Command | Description |
 | --- | --- |
 | `gdkbox up NAME` | Pull the GDK image, start a box, enable SSH, install Claude Code, register VS Code host. |
-| `gdkbox ls` | List boxes and their container status. |
-| `gdkbox status NAME` | Show container state and connection details. |
+| `gdkbox ls` | List boxes and their container status (`--json` for orchestrators). |
+| `gdkbox status NAME` | Show container state and connection details (`--json`). |
+| `gdkbox dispatch NAME` | Run a Claude Code agent task headlessly in the box (`--task`/`--task-file`). |
 | `gdkbox code NAME` | Open the box in VS Code via Remote-SSH. |
 | `gdkbox ssh NAME` | Open an interactive SSH session into the box. |
 | `gdkbox claude NAME` | Install Claude Code inside the box. |
@@ -108,6 +109,37 @@ open http://127.0.0.1:3000
 gdkbox stop demo
 gdkbox rm demo
 ```
+
+## Orchestrating a fleet of agents
+
+The end goal of `gdkbox` is to back an **orchestrator** that runs a pool of
+reusable boxes and dispatches a Claude Code agent into each to execute tasks in
+parallel. Two primitives make this possible:
+
+- **Headless agent runs:** `gdkbox dispatch NAME --task "..."` runs `claude -p`
+  non-interactively inside the box and streams the agent's output. Exit status
+  mirrors the agent's. Add `--json` for structured output and `--timeout N` to
+  bound a run.
+- **Machine-readable state:** `gdkbox ls --json` / `gdkbox status NAME --json`
+  emit JSON descriptors so an orchestrator can see which boxes exist and their
+  state.
+
+```sh
+# Warm a pool of 3 boxes (in parallel; first run pulls a large image)
+for i in 1 2 3; do gdkbox up "pool-$i" --json & done; wait
+
+# Fan three tasks out, one per box
+gdkbox dispatch pool-1 --task "Run the test suite and fix the first failure" --json &
+gdkbox dispatch pool-2 --task "Update the README install section" --json &
+gdkbox dispatch pool-3 --task "Add a changelog entry" --json &
+wait
+```
+
+In this repo the orchestrator is meant to be **another Claude Code session**,
+guided by the bundled **`gdkbox-fleet` skill** at
+[`.claude/skills/gdkbox-fleet/SKILL.md`](../.claude/skills/gdkbox-fleet/SKILL.md),
+which documents the pool model, dispatch loop, state-reset-between-tasks
+caveat, and guardrails.
 
 ## Configuration
 

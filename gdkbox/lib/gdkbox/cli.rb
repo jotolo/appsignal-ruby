@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "thor"
 require "gdkbox"
 
@@ -25,12 +26,14 @@ module GDKBox
     option :web_port, type: :numeric, desc: "Host port to publish the GDK web UI on"
     option :claude, type: :boolean, default: true,
       desc: "Install Claude Code inside the box"
+    option :json, type: :boolean, default: false,
+      desc: "Print the box descriptor as JSON (for orchestrators)"
     def up(name)
       ensure_docker!
       box = build_box(name)
       raise Error, "Box '#{name}' already exists. Use `gdkbox rm #{name}` first." if box.exists?
 
-      say "Spinning up GDK box '#{name}' (this pulls a large image on first run)...", :green
+      say "Spinning up GDK box '#{name}' (this pulls a large image on first run)...", :green unless options[:json]
       box.create!(
         image: options[:image],
         ssh_port: options[:ssh_port],
@@ -39,20 +42,34 @@ module GDKBox
       )
       rewrite_ssh_config
 
+      if options[:json]
+        puts JSON.generate(box.summary)
+        return
+      end
+
       say "\nBox '#{name}' is up.", :green
       print_connection_details(box)
     end
 
     desc "ls", "List all GDK boxes and their status"
+    option :json, type: :boolean, default: false,
+      desc: "Print the fleet as a JSON array (for orchestrators)"
     def ls
-      boxes = Box.all(config: config)
+      boxes = Box.all(config: config).sort_by(&:name)
+      docker = Docker.new
+
+      if options[:json]
+        summaries = boxes.map { |box| box.summary(state: docker.available? ? nil : "unknown") }
+        puts JSON.generate(summaries)
+        return
+      end
+
       if boxes.empty?
         say "No GDK boxes yet. Create one with `gdkbox up <name>`."
         return
       end
 
-      docker = Docker.new
-      boxes.sort_by(&:name).each do |box|
+      boxes.each do |box|
         status = docker.available? ? box.state : "unknown"
         say format("%-20s %-10s ssh:%-6s web:%-6s %s",
           box.name, status, box.ssh_port, box.web_port, box.web_url)
@@ -60,12 +77,51 @@ module GDKBox
     end
 
     desc "status NAME", "Show detailed status and connection info for a box"
+    option :json, type: :boolean, default: false, desc: "Print the box descriptor as JSON"
     def status(name)
       box = load_box!(name)
+      docker = Docker.new
+
+      if options[:json]
+        puts JSON.generate(box.summary(state: docker.available? ? nil : "unknown"))
+        return
+      end
+
       say "Box:        #{box.name}"
       say "Container:  #{box.container_name}"
-      say "State:      #{Docker.new.available? ? box.state : 'unknown'}"
+      say "State:      #{docker.available? ? box.state : 'unknown'}"
       print_connection_details(box)
+    end
+
+    desc "dispatch NAME", "Dispatch a Claude Code agent task headlessly into the box"
+    long_desc <<~DESC
+      Runs `claude -p` non-interactively inside the box's GDK checkout and
+      streams the agent's output. This is the primitive an orchestrator uses
+      to hand a task to a box in the pool. Provide the task with --task or
+      --task-file. Exit status mirrors the agent's.
+    DESC
+    option :task, type: :string, desc: "The task/prompt to give the agent"
+    option :task_file, type: :string, desc: "Read the task from a local file"
+    option :json, type: :boolean, default: false,
+      desc: "Return Claude's structured JSON output"
+    option :timeout, type: :numeric, desc: "Abort the agent after N seconds"
+    option :yolo, type: :boolean, default: true,
+      desc: "Skip permission prompts (safe in an isolated box)"
+    def dispatch(name)
+      box = load_box!(name)
+      task = options[:task]
+      task = File.read(options[:task_file]) if options[:task_file]
+      raise Error, "Provide a task with --task or --task-file." if task.nil? || task.strip.empty?
+
+      result = box.run_agent(
+        task: task,
+        json: options[:json],
+        yolo: options[:yolo],
+        timeout: options[:timeout]
+      )
+      $stdout.print(result.stdout)
+      $stderr.print(result.stderr) unless result.stderr.to_s.empty?
+      exit(result.status)
     end
 
     desc "ssh NAME", "Open an interactive SSH session into the box"

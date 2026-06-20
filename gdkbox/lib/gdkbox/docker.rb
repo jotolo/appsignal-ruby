@@ -33,12 +33,17 @@ module GDKBox
     # Run a bash script inside a running container. The script is passed to
     # `bash -lc` as a single argument; values that vary (keys, usernames) are
     # passed through the environment to avoid quoting pitfalls.
-    def exec(name, script, user: nil, env: {}, input: nil)
+    #
+    # When check is true (the default) a non-zero exit raises; pass check:
+    # false to capture output and exit status without raising, which is what
+    # agent runs want so the caller can surface the agent's output either way.
+    def exec(name, script, user: nil, workdir: nil, env: {}, input: nil, check: true)
       cmd = ["docker", "exec", "-i"]
       cmd.push("-u", user) if user
+      cmd.push("-w", workdir) if workdir
       env.each { |key, value| cmd.push("-e", "#{key}=#{value}") }
       cmd.push(name, "bash", "-lc", script)
-      @shell.run!(*cmd, input: input)
+      check ? @shell.run!(*cmd, input: input) : @shell.run(*cmd, input: input)
     end
 
     def start(name)

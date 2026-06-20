@@ -108,4 +108,62 @@ RSpec.describe GDKBox::Box do
       expect(box.remote_path).to eq("/home/gdk/gdk")
     end
   end
+
+  describe "#run_agent" do
+    before { box.create! }
+
+    it "runs claude headless in the GDK checkout, passing the task via env" do
+      box.run_agent(task: "fix the failing spec")
+      exec = shell.commands.find { |c| c[:argv].last.to_s.start_with?("claude -p") }
+      expect(exec).not_to be_nil
+      expect(exec[:argv]).to include("-u", "gdk", "-w", "/home/gdk/gdk")
+      expect(exec[:argv]).to include("-e", "GDKBOX_TASK=fix the failing spec")
+      expect(exec[:argv].last).to eq('claude -p "$GDKBOX_TASK" --dangerously-skip-permissions')
+    end
+
+    it "adds JSON output and a timeout when requested" do
+      box.run_agent(task: "do it", json: true, timeout: 600)
+      cmd = shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }[:argv].last
+      expect(cmd).to eq('timeout 600 claude -p "$GDKBOX_TASK" --output-format json --dangerously-skip-permissions')
+    end
+
+    it "omits the skip-permissions flag when yolo is disabled" do
+      box.run_agent(task: "careful", yolo: false)
+      cmd = shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }[:argv].last
+      expect(cmd).to eq('claude -p "$GDKBOX_TASK"')
+    end
+
+    it "returns the agent output and exit status without raising on failure" do
+      failing = FakeShell.new(
+        responses: {
+          %(docker exec -i -u gdk -w /home/gdk/gdk -e GDKBOX_TASK=boom gdkbox-demo bash -lc claude -p "$GDKBOX_TASK" --dangerously-skip-permissions) =>
+            GDKBox::Shell::Result.new("partial output", "agent error", 2)
+        }
+      )
+      failed_box = described_class.new(
+        "demo", config: config, shell: failing, store: store, ssh_key: ssh_key
+      )
+      result = failed_box.run_agent(task: "boom")
+      expect(result.stdout).to eq("partial output")
+      expect(result.status).to eq(2)
+      expect(result).not_to be_success
+    end
+  end
+
+  describe "#summary" do
+    before { box.create! }
+
+    it "produces a machine-readable descriptor for orchestrators" do
+      summary = box.summary(state: "running")
+      expect(summary).to include(
+        "name" => "demo",
+        "state" => "running",
+        "ssh_host" => "gdkbox-demo",
+        "ssh_port" => 2222,
+        "web_url" => "http://127.0.0.1:3000",
+        "remote_path" => "/home/gdk/gdk",
+        "claude_installed" => true
+      )
+    end
+  end
 end

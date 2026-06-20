@@ -6,6 +6,13 @@ module GDKBox
   # A single GDK-in-a-box instance: a Docker container plus its persisted
   # metadata. This is the orchestration layer the CLI talks to.
   class Box
+    # Outcome of a headless agent run inside a box.
+    AgentResult = Struct.new(:stdout, :stderr, :status) do
+      def success?
+        status.zero?
+      end
+    end
+
     attr_reader :name, :config
 
     def initialize(name, config:, shell: Shell.new, docker: nil, store: nil, ssh_key: nil)
@@ -128,6 +135,43 @@ module GDKBox
 
       @data = data.merge("claude_installed" => true)
       @store.save(@data)
+    end
+
+    # Run a Claude Code agent non-interactively inside the box and capture its
+    # output. This is the primitive an orchestrator uses to dispatch a task to
+    # a box. The task text is passed through the environment so arbitrary
+    # prompts cannot break out of the shell command.
+    def run_agent(task:, json: false, yolo: true, timeout: nil)
+      raise Error, "Box '#{name}' does not exist" unless exists?
+
+      command = +%(claude -p "$GDKBOX_TASK")
+      command << " --output-format json" if json
+      command << " --dangerously-skip-permissions" if yolo
+      command = "timeout #{Integer(timeout)} #{command}" if timeout
+
+      result = @docker.exec(
+        container_name, command,
+        user: @config.ssh_user,
+        workdir: remote_path,
+        env: { "GDKBOX_TASK" => task },
+        check: false
+      )
+      AgentResult.new(result.stdout, result.stderr, result.status)
+    end
+
+    # A machine-readable summary for orchestrators (`gdkbox ls --json`).
+    def summary(state: nil)
+      {
+        "name" => name,
+        "state" => (state || self.state).to_s,
+        "container_name" => container_name,
+        "ssh_host" => ssh_host_alias,
+        "ssh_port" => ssh_port,
+        "web_port" => web_port,
+        "web_url" => web_url,
+        "remote_path" => remote_path,
+        "claude_installed" => data && data["claude_installed"]
+      }
     end
 
     # argv to open an interactive SSH session using the generated config.
