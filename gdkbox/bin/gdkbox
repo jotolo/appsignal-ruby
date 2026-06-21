@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Development entry point: runs the CLI straight from the source tree without
+# installing the gem. The packaged executable lives in exe/gdkbox.
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "gdkbox/cli"
+
+begin
+  GDKBox::CLI.start(ARGV)
+rescue GDKBox::Error => e
+  warn e.message
+  exit 1
+end
