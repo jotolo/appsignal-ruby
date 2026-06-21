@@ -73,7 +73,7 @@ module GDKBox
 
     # Provision a brand new box end to end: pull image, run container, enable
     # SSH, optionally install Claude Code, then persist metadata.
-    def create!(image: nil, ssh_port: nil, web_port: nil, install_claude: true)
+    def create!(image: nil, ssh_port: nil, web_port: nil, install_claude: true, api_key: nil)
       raise Error, "Box '#{name}' already exists" if exists?
 
       image ||= @config.default_image
@@ -96,6 +96,8 @@ module GDKBox
       provisioner = Provisioner.new(docker: @docker, config: @config)
       provisioner.setup_ssh(cname, public_key)
       provisioner.setup_claude(cname) if install_claude
+      api_key_set = !(api_key.nil? || api_key.strip.empty?)
+      provisioner.setup_api_key(cname, api_key) if api_key_set
 
       @data = {
         "name" => name,
@@ -106,6 +108,7 @@ module GDKBox
         "ssh_user" => @config.ssh_user,
         "remote_path" => @config.remote_path,
         "claude_installed" => install_claude,
+        "api_key_set" => api_key_set,
         "created_at" => Time.now.utc.iso8601
       }
       @store.save(@data)
@@ -137,6 +140,17 @@ module GDKBox
       @store.save(@data)
     end
 
+    # Seed or rotate the Anthropic API key inside an existing box so dispatched
+    # agents can authenticate unattended.
+    def set_api_key!(api_key)
+      raise Error, "Box '#{name}' does not exist" unless exists?
+      raise Error, "An API key is required" if api_key.nil? || api_key.strip.empty?
+
+      Provisioner.new(docker: @docker, config: @config).setup_api_key(container_name, api_key)
+      @data = data.merge("api_key_set" => true)
+      @store.save(@data)
+    end
+
     # Run a Claude Code agent non-interactively inside the box and capture its
     # output. This is the primitive an orchestrator uses to dispatch a task to
     # a box. The task text is passed through the environment so arbitrary
@@ -144,10 +158,12 @@ module GDKBox
     def run_agent(task:, json: false, yolo: true, timeout: nil)
       raise Error, "Box '#{name}' does not exist" unless exists?
 
-      command = +%(claude -p "$GDKBOX_TASK")
-      command << " --output-format json" if json
-      command << " --dangerously-skip-permissions" if yolo
-      command = "timeout #{Integer(timeout)} #{command}" if timeout
+      agent = +%(claude -p "$GDKBOX_TASK")
+      agent << " --output-format json" if json
+      agent << " --dangerously-skip-permissions" if yolo
+      agent = "timeout #{Integer(timeout)} #{agent}" if timeout
+      # Source the seeded API key (if any) so the agent authenticates unattended.
+      command = %([ -f "$HOME/.gdkbox/env" ] && . "$HOME/.gdkbox/env"; #{agent})
 
       result = @docker.exec(
         container_name, command,
@@ -170,7 +186,8 @@ module GDKBox
         "web_port" => web_port,
         "web_url" => web_url,
         "remote_path" => remote_path,
-        "claude_installed" => data && data["claude_installed"]
+        "claude_installed" => data && data["claude_installed"],
+        "api_key_set" => (data && data["api_key_set"]) || false
       }
     end
 

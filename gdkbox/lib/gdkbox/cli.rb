@@ -28,17 +28,21 @@ module GDKBox
       desc: "Install Claude Code inside the box"
     option :json, type: :boolean, default: false,
       desc: "Print the box descriptor as JSON (for orchestrators)"
+    option :anthropic_api_key, type: :string,
+      desc: "Seed an Anthropic API key for unattended dispatch (defaults to $ANTHROPIC_API_KEY)"
     def up(name)
       ensure_docker!
       box = build_box(name)
       raise Error, "Box '#{name}' already exists. Use `gdkbox rm #{name}` first." if box.exists?
+      api_key = resolve_api_key
 
       say "Spinning up GDK box '#{name}' (this pulls a large image on first run)...", :green unless options[:json]
       box.create!(
         image: options[:image],
         ssh_port: options[:ssh_port],
         web_port: options[:web_port],
-        install_claude: options[:claude]
+        install_claude: options[:claude],
+        api_key: api_key
       )
       rewrite_ssh_config
 
@@ -49,6 +53,10 @@ module GDKBox
 
       say "\nBox '#{name}' is up.", :green
       print_connection_details(box)
+      unless api_key
+        say "\n  No Anthropic API key seeded. Before unattended dispatch, run:", :yellow
+        say "    gdkbox set-key #{name}   (uses $ANTHROPIC_API_KEY)", :yellow
+      end
     end
 
     desc "ls", "List all GDK boxes and their status"
@@ -153,6 +161,27 @@ module GDKBox
       say "Done. SSH in and run `claude` to start an agent.", :green
     end
 
+    desc "set-key NAME", "Seed or rotate the Anthropic API key inside the box"
+    long_desc <<~DESC
+      Stores an Anthropic API key inside the box so dispatched agents can
+      authenticate without a human. The key is kept only inside the container
+      (a 0600 file owned by the GDK user) and never in host-side metadata.
+      Prefer passing it via the ANTHROPIC_API_KEY environment variable rather
+      than --anthropic-api-key, which can be visible in shell history.
+    DESC
+    option :anthropic_api_key, type: :string,
+      desc: "API key to seed (defaults to $ANTHROPIC_API_KEY)"
+    def set_key(name)
+      box = load_box!(name)
+      api_key = resolve_api_key
+      raise Error, "Provide --anthropic-api-key or set $ANTHROPIC_API_KEY." unless api_key
+
+      say "Seeding Anthropic API key into '#{name}'...", :green
+      box.set_api_key!(api_key)
+      say "Done. Unattended `gdkbox dispatch #{name}` is ready.", :green
+    end
+    map "set-key" => :set_key
+
     desc "start NAME", "Start a stopped box (and re-enable SSH)"
     def start(name)
       box = load_box!(name)
@@ -206,6 +235,14 @@ module GDKBox
       return if Docker.new.available?
 
       raise Error, "Docker does not appear to be installed or on PATH."
+    end
+
+    # The API key from --anthropic-api-key, falling back to the environment.
+    # Returns nil when neither is set or the value is blank.
+    def resolve_api_key
+      key = options[:anthropic_api_key]
+      key = ENV["ANTHROPIC_API_KEY"] if key.nil? || key.strip.empty?
+      key unless key.nil? || key.strip.empty?
     end
 
     def rewrite_ssh_config

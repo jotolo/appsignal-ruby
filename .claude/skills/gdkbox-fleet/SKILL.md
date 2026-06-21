@@ -34,9 +34,12 @@ running GitLab's official GDK image with SSH and Claude Code preinstalled.
    `ruby -Igdkbox/lib gdkbox/bin/gdkbox <args>` — or install it:
    `cd gdkbox && gem build gdkbox.gemspec && gem install ./gdkbox-*.gem`.
 2. Docker is installed and running (`gdkbox ls --json` should not error).
-3. Claude Code inside the boxes needs Anthropic credentials the first time.
-   Provision the boxes' auth before relying on unattended dispatch (e.g.
-   `gdkbox ssh pool-1 -t claude` once, or arrange an API key in the box).
+3. For **unattended dispatch**, each box needs an Anthropic API key. Export
+   `ANTHROPIC_API_KEY` before provisioning and `gdkbox up` seeds it
+   automatically; for boxes that already exist, run `gdkbox set-key <box>`.
+   The key is stored only inside the container (a `0600` file owned by the GDK
+   user) and never in host-side metadata. Check readiness with the
+   `api_key_set` field from `gdkbox ls --json` / `status --json`.
 
 In the examples below, `gdkbox` means "the gdkbox CLI, however it is invoked".
 
@@ -45,6 +48,7 @@ In the examples below, `gdkbox` means "the gdkbox CLI, however it is invoked".
 | Goal | Command |
 | --- | --- |
 | Create/start a box | `gdkbox up <name> [--json]` |
+| Seed/rotate API key | `gdkbox set-key <name>` (uses `$ANTHROPIC_API_KEY`) |
 | List the fleet (parseable) | `gdkbox ls --json` |
 | Inspect one box | `gdkbox status <name> --json` |
 | **Run an agent task** | `gdkbox dispatch <name> --task "<task>" [--json] [--timeout N]` |
@@ -66,7 +70,8 @@ In the examples below, `gdkbox` means "the gdkbox CLI, however it is invoked".
     "web_port": 3000,
     "web_url": "http://127.0.0.1:3000",
     "remote_path": "/home/gdk/gdk",
-    "claude_installed": true
+    "claude_installed": true,
+    "api_key_set": true
   }
 ]
 ```
@@ -85,10 +90,13 @@ its stdout is Claude's structured result, which you can parse per task.
    and wait for all of them:
 
    ```sh
+   export ANTHROPIC_API_KEY=sk-ant-...    # so up seeds each box for unattended dispatch
    for i in 1 2 3; do gdkbox up "pool-$i" --json & done; wait
    ```
 
-   Verify with `gdkbox ls --json` that every box reports `"state":"running"`.
+   Verify with `gdkbox ls --json` that every box reports `"state":"running"`
+   and `"api_key_set":true`. If any box is missing the key, run
+   `gdkbox set-key <box>`.
 
 3. **Dispatch tasks across free boxes.** Keep a queue of tasks and a map of
    busy boxes. Assign each task to a free box and run dispatches concurrently —

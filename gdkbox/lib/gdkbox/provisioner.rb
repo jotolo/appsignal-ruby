@@ -37,6 +37,27 @@ module GDKBox
       claude --version || true
     BASH
 
+    # Writes the Anthropic API key into the box so dispatched agents can
+    # authenticate without a human. The key is stored only inside the
+    # container, at a 0600 file owned by the GDK user, and is sourced
+    # explicitly by `gdkbox dispatch`; it is also wired into the interactive
+    # shells for convenience. The key never touches host-side metadata.
+    API_KEY_SETUP = <<~'BASH'
+      set -e
+      home="/home/$GDKBOX_USER"
+      install -d -m 700 -o "$GDKBOX_USER" -g "$GDKBOX_USER" "$home/.gdkbox"
+      umask 077
+      printf "export ANTHROPIC_API_KEY='%s'\n" "$GDKBOX_API_KEY" > "$home/.gdkbox/env"
+      chown "$GDKBOX_USER:$GDKBOX_USER" "$home/.gdkbox/env"
+      chmod 600 "$home/.gdkbox/env"
+      line='[ -f "$HOME/.gdkbox/env" ] && . "$HOME/.gdkbox/env"'
+      for f in "$home/.bashrc" "$home/.profile"; do
+        touch "$f"
+        grep -qF "$line" "$f" || printf '%s\n' "$line" >> "$f"
+        chown "$GDKBOX_USER:$GDKBOX_USER" "$f"
+      done
+    BASH
+
     def initialize(docker:, config:)
       @docker = docker
       @config = config
@@ -52,6 +73,14 @@ module GDKBox
 
     def setup_claude(container_name)
       @docker.exec(container_name, CLAUDE_SETUP, user: @config.ssh_user)
+    end
+
+    def setup_api_key(container_name, api_key)
+      @docker.exec(
+        container_name, API_KEY_SETUP,
+        user: "root",
+        env: { "GDKBOX_USER" => @config.ssh_user, "GDKBOX_API_KEY" => api_key }
+      )
     end
   end
 end

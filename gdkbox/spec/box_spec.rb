@@ -112,31 +112,42 @@ RSpec.describe GDKBox::Box do
   describe "#run_agent" do
     before { box.create! }
 
+    def agent_command
+      shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }[:argv].last
+    end
+
     it "runs claude headless in the GDK checkout, passing the task via env" do
       box.run_agent(task: "fix the failing spec")
-      exec = shell.commands.find { |c| c[:argv].last.to_s.start_with?("claude -p") }
+      exec = shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }
       expect(exec).not_to be_nil
       expect(exec[:argv]).to include("-u", "gdk", "-w", "/home/gdk/gdk")
       expect(exec[:argv]).to include("-e", "GDKBOX_TASK=fix the failing spec")
-      expect(exec[:argv].last).to eq('claude -p "$GDKBOX_TASK" --dangerously-skip-permissions')
+      expect(exec[:argv].last).to eq(
+        '[ -f "$HOME/.gdkbox/env" ] && . "$HOME/.gdkbox/env"; claude -p "$GDKBOX_TASK" --dangerously-skip-permissions'
+      )
+    end
+
+    it "sources the seeded API key before invoking the agent" do
+      box.run_agent(task: "do it")
+      expect(agent_command).to start_with('[ -f "$HOME/.gdkbox/env" ] && . "$HOME/.gdkbox/env";')
     end
 
     it "adds JSON output and a timeout when requested" do
       box.run_agent(task: "do it", json: true, timeout: 600)
-      cmd = shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }[:argv].last
-      expect(cmd).to eq('timeout 600 claude -p "$GDKBOX_TASK" --output-format json --dangerously-skip-permissions')
+      expect(agent_command).to end_with(
+        'timeout 600 claude -p "$GDKBOX_TASK" --output-format json --dangerously-skip-permissions'
+      )
     end
 
     it "omits the skip-permissions flag when yolo is disabled" do
       box.run_agent(task: "careful", yolo: false)
-      cmd = shell.commands.find { |c| c[:argv].last.to_s.include?("claude -p") }[:argv].last
-      expect(cmd).to eq('claude -p "$GDKBOX_TASK"')
+      expect(agent_command).to end_with('claude -p "$GDKBOX_TASK"')
     end
 
     it "returns the agent output and exit status without raising on failure" do
       failing = FakeShell.new(
         responses: {
-          %(docker exec -i -u gdk -w /home/gdk/gdk -e GDKBOX_TASK=boom gdkbox-demo bash -lc claude -p "$GDKBOX_TASK" --dangerously-skip-permissions) =>
+          %(docker exec -i -u gdk -w /home/gdk/gdk -e GDKBOX_TASK=boom gdkbox-demo bash -lc [ -f "$HOME/.gdkbox/env" ] && . "$HOME/.gdkbox/env"; claude -p "$GDKBOX_TASK" --dangerously-skip-permissions) =>
             GDKBox::Shell::Result.new("partial output", "agent error", 2)
         }
       )
@@ -147,6 +158,37 @@ RSpec.describe GDKBox::Box do
       expect(result.stdout).to eq("partial output")
       expect(result.status).to eq(2)
       expect(result).not_to be_success
+    end
+  end
+
+  describe "API key seeding" do
+    it "seeds the key during create! and records it in metadata" do
+      box.create!(api_key: "sk-ant-test")
+      seed = shell.commands.find { |c| c[:argv].include?("-e") && c[:argv].include?("GDKBOX_API_KEY=sk-ant-test") }
+      expect(seed).not_to be_nil
+      expect(seed[:argv]).to include("-u", "root")
+      expect(seed[:argv].last).to include("ANTHROPIC_API_KEY")
+      expect(store.load("demo")["api_key_set"]).to be(true)
+    end
+
+    it "does not seed a key when none is given" do
+      box.create!
+      seeded = shell.commands.any? { |c| c[:argv].any? { |a| a.to_s.start_with?("GDKBOX_API_KEY=") } }
+      expect(seeded).to be(false)
+      expect(store.load("demo")["api_key_set"]).to be(false)
+    end
+
+    it "seeds or rotates the key on an existing box" do
+      box.create!
+      box.set_api_key!("sk-ant-rotated")
+      seed = shell.commands.find { |c| c[:argv].include?("GDKBOX_API_KEY=sk-ant-rotated") }
+      expect(seed).not_to be_nil
+      expect(store.load("demo")["api_key_set"]).to be(true)
+    end
+
+    it "refuses a blank key" do
+      box.create!
+      expect { box.set_api_key!("  ") }.to raise_error(GDKBox::Error, /required/)
     end
   end
 
@@ -162,7 +204,8 @@ RSpec.describe GDKBox::Box do
         "ssh_port" => 2222,
         "web_url" => "http://127.0.0.1:3000",
         "remote_path" => "/home/gdk/gdk",
-        "claude_installed" => true
+        "claude_installed" => true,
+        "api_key_set" => false
       )
     end
   end

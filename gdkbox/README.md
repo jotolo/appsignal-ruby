@@ -75,6 +75,7 @@ Or run it straight from a checkout without installing:
 | `gdkbox code NAME` | Open the box in VS Code via Remote-SSH. |
 | `gdkbox ssh NAME` | Open an interactive SSH session into the box. |
 | `gdkbox claude NAME` | Install Claude Code inside the box. |
+| `gdkbox set-key NAME` | Seed/rotate the Anthropic API key in the box for unattended dispatch. |
 | `gdkbox start NAME` | Start a stopped box (and re-enable SSH). |
 | `gdkbox stop NAME` | Stop a running box. |
 | `gdkbox rm NAME` | Remove a box: container, metadata, and SSH entry. |
@@ -124,16 +125,32 @@ parallel. Two primitives make this possible:
   emit JSON descriptors so an orchestrator can see which boxes exist and their
   state.
 
+For **unattended** dispatch the agents need Anthropic credentials. Seed an API
+key into each box (kept only inside the container, in a `0600` file owned by the
+GDK user — never in host-side metadata). `gdkbox up` and `gdkbox set-key` both
+default to the `ANTHROPIC_API_KEY` environment variable:
+
 ```sh
-# Warm a pool of 3 boxes (in parallel; first run pulls a large image)
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Warm a pool of 3 boxes (in parallel; first run pulls a large image).
+# The key is seeded automatically because ANTHROPIC_API_KEY is set.
 for i in 1 2 3; do gdkbox up "pool-$i" --json & done; wait
 
-# Fan three tasks out, one per box
+# Or seed/rotate the key on existing boxes:
+gdkbox set-key pool-1
+
+# Fan three tasks out, one per box. Agents authenticate with the seeded key.
 gdkbox dispatch pool-1 --task "Run the test suite and fix the first failure" --json &
 gdkbox dispatch pool-2 --task "Update the README install section" --json &
 gdkbox dispatch pool-3 --task "Add a changelog entry" --json &
 wait
 ```
+
+`gdkbox ls --json` reports `"api_key_set": true|false` per box so an
+orchestrator can tell which boxes are ready for unattended work. Prefer the
+`ANTHROPIC_API_KEY` env var over `--anthropic-api-key`, which can leak into
+shell history.
 
 In this repo the orchestrator is meant to be **another Claude Code session**,
 guided by the bundled **`gdkbox-fleet` skill** at
